@@ -1,0 +1,340 @@
+---
+title: "Rapport de TP - Modèles de Régression Régularisée"
+author: "Tommy MORALES, Aslan MARTIN"
+date: "2025-10-19"
+output: 
+  pdf_document:
+    toc: true
+    number_sections: true
+    extra_dependencies: float
+lang: fr
+---
+
+```{r setup, include=FALSE}
+rm(list=ls())
+graphics.off()
+
+library(corrplot)
+library(leaps)
+library(lars)
+library(ggplot2)
+library(dplyr)
+library(MASS)
+library(glmnet)
+
+df <- read.csv("Mexico_data.csv")
+
+# Conversion de la date en format numérique pour les calculs
+df$X0 <- as.Date(df$X0)
+df$X0 <- as.numeric(df$X0)
+```
+
+# Introduction
+
+Ce rapport, réalisé dans le cadre du cours de Modèles de Régression Régularisée, se concentre sur l'analyse d'un jeu de données concernant la production d'électricité au Mexique. L'objectif est de construire un modèle de régression linéaire permettant d'expliquer et de prédire la consommation énergétique journalière en fonction de variables météorologiques et calendaires. Une attention particulière sera portée à l'identification et au traitement des problèmes de multicolinéarité afin de garantir la robustesse et l'interprétabilité du modèle final.
+
+# Étude IV : Production d'Électricité au Mexique
+
+## Analyse Exploratoire des Données (EDA)
+
+### Problématique et présentation des données
+
+L'objectif est d'expliquer la production d'électricité journalière ($Total$) au Mexique en utilisant un ensemble de variables météorologiques et temporelles. Une rapide analyse confirme qu'aucune donnée n'est manquante, qu'il n'y a pas d'outliers, et que les formats sont consistants. Le csv contient les données de 12 variables collectées pendant 1461 jours.
+
+```{r header_donnees_mexico, echo=FALSE}
+head(df)
+```
+
+```{r code_invisible_pour_table, include=FALSE}
+desc_table <- data.frame(
+  Variable = c("X0", "RH", "SSRD", "STRD", "T2M", "T2Mmax", "T2Mmin", "Covid", "Holidays", "DOW", "TOY", "Total"),
+  Description = c("Date (numérique)", "Humidité relative (%)", "Radiation solaire de surface (J.m-2)", "Radiation thermique de surface (J.m-2)", "Température moyenne à 2m (°C)", "Température maximale à 2m (°C)", "Température minimale à 2m (°C)", "Indice de restriction COVID", "Jours fériés (1) ou non (0)", "Jour de la semaine (0=Lundi, 6=Dimanche)", "Jour de l'année (1-366)", "Électricité produite (GWh)")
+)
+```
+
+Voici un aperçu des variables présentes dans le jeu de données :
+`r knitr::kable(desc_table, caption = "Description des variables du jeu de données.")`
+
+### Analyse univariée et bivariée
+
+Une première visualisation de la consommation en fonction de la température minimale montre une forte corrélation positive. Plus la température minimale est élevée, plus la consommation est importante, probablement à cause de la climatisation.
+
+```{r plot_conso_temp_mexico, echo=TRUE, fig.cap="Consommation en fonction de la température minimale."}
+plot(df$T2Mmin, df$Total,
+     main = "Consommation vs Température Minimale",
+     xlab = "Température minimale (°C)",
+     ylab = "Consommation totale (GWh)",
+     pch = 16, col = "darkblue",
+     panel.first = grid())
+```
+
+### Détection de la Multicolinéarité
+
+Avant la modélisation, une analyse de la corrélation est essentielle pour éviter les problèmes de multicolinéarité qui rendent les modèles instables.
+
+```{r, fig.cap="Matrice de corrélation des variables."}
+corrplot(cor(df))
+```
+
+La matrice de corrélation confirme que les variables `T2M`, `T2Mmax`, `T2Mmin` et `STRD` sont très fortement corrélées entre elles (coefficients > 0.85). Les inclure simultanément dans un modèle OLS rendrait l'interprétation des coefficients impossible et non fiable. Elle révèle aussi que les marqueurs temporels et les effets du COVID sont faiblement corrélés avec le Total, et donc qu'ils ne sont peut-être pas essentielles.
+
+Pour vérifier la multicolinéarité, et démontrer les difficultés d'interprétations, observons la relation prédite entre $Total$ et $T2Mmin$ via OLS naïve, avec en noir la courbe pour une relation Total~T2Mmin:
+
+```{r fig-ref, echo=TRUE, fig.cap="Consommation en fonction de la température minimale prédite naïvement."}
+
+model <- lm(Total ~ ., data = df)
+
+plot(df$T2Mmin, df$Total,
+     main = "Consommation vs Température Minimale",
+     xlab = "Température minimale (°C)",
+     ylab = "Consommation totale (GWh)",
+     pch = 16, col = "darkblue",
+     panel.first = grid())
+
+T2Mmin_range <- seq(min(df$T2Mmin), max(df$T2Mmin), length.out = 100)
+
+predict_data_2 <- data.frame(
+  T2Mmin = T2Mmin_range,
+  X0 = mean(df$X0),
+  RH = mean(df$RH),
+  SSRD = mean(df$SSRD),
+  STRD = mean(df$STRD),
+  T2M = mean(df$T2M),
+  Covid = mean(df$Covid),
+  T2Mmax = mean(df$T2Mmax),
+  Holidays = mean(df$Holidays),
+  DOW = mean(df$DOW),
+  TOY = mean(df$TOY)
+)
+
+total_predictions_2 <- predict(model, predict_data_2)
+
+lines(T2Mmin_range, total_predictions_2, col = "red", lwd = 2)
+
+model_check <- lm(Total ~ T2Mmin, data = df)
+
+abline(model_check, col = "black", lwd = 2)
+
+legend("topleft", legend = "Prédiction naïve", col = "red", lwd = 2)
+```
+
+Les prédictions sont imparfaites (visuellement parlant) du fait de l'influence des autres variables corrélées (telles que T2Mmax). Dès lors, l'interprétation des résultats devient difficile.
+
+## Modélisation et Sélection de Variables
+
+### Premier modèle : OLS avec toutes les variables
+
+Nous construisons un premier modèle incluant toutes les variables pour observer les effets de la multicolinéarité.
+
+```{r a}
+model1 <- lm(Total ~ ., data = df)
+summary(model1)
+```
+
+Ce modèle présente les problèmes attendus : des variables de température comme $T2M$ et $T2Mmax$ sont inexploitables, et le coefficient de $T2M$ est négatif, ce qui est contre-intuitif (Si T2M et T2Mmin ont des coefficients positifs, la logique veut que ce soit aussi le cas de T2M). Le modèle est donc instable et peu interprétable (voir le plot précédent).
+
+### Interprétation du modèle final
+
+Pour construire un modèle robuste, nous sélectionnons un sous-ensemble de variables en éliminant celles qui sont redondantes. Nous conservons `T2Mmin` comme unique représentant de la température et retirons `T2M`, `T2Mmax` et `STRD`. Nous enlevons également `TOY`, qui est équivalent à `X0`.
+
+```{r b}
+model_final <- lm(Total ~ X0 + RH + SSRD + T2Mmin + Covid + Holidays + DOW, data = df)
+summary(model_final)
+```
+
+Ce modèle final est bien plus satisfaisant : toutes les variables sont très significatives et les signes des coefficients sont logiques. Le R-squared ajusté de **0.7631** signifie que notre modèle explique environ **76.3%** de la variance de la consommation totale.
+
+L'interprétation des coefficients nous apprend que:
+
+  - $T2Mmin$ : Une augmentation de 1°C de la température minimale est associée à une hausse de **13.30 GWh** de la consommation.
+  
+  - $Holidays$ : Un jour férié réduit la consommation de **86.64 GWh** par rapport à un jour ouvré.
+  
+  - $DOW$ : Chaque jour qui passe dans la semaine (de Lundi=0 à Dimanche=6) est associé à une baisse moyenne de **12.90 GWh**.
+  
+  - $Covid$ : Un point d'indice de restriction COVID en plus est associé à une baisse de **0.5 GWh** de la consommation, ce qui est cohérent avec une baisse de l'activité économique.
+  
+```{r fig-ref2, echo=TRUE, fig.cap="Consommation en fonction de la température minimale prédite après filtrage des variables"}
+plot(df$T2Mmin, df$Total,
+     main = "Consommation vs Température Minimale",
+     xlab = "Température minimale (°C)",
+     ylab = "Consommation totale (GWh)",
+     pch = 16, col = "darkblue",
+     panel.first = grid())
+
+T2Mmin_range <- seq(min(df$T2Mmin), max(df$T2Mmin), length.out = 100)
+
+predict_data_3 <- data.frame(
+  T2Mmin = T2Mmin_range,
+  X0 = mean(df$X0),
+  RH = mean(df$RH),
+  SSRD = mean(df$SSRD),
+  Covid = mean(df$Covid),
+  Holidays = mean(df$Holidays),
+  DOW = mean(df$DOW)
+)
+
+total_predictions_3 <- predict(model_final, predict_data_3)
+
+lines(T2Mmin_range, total_predictions_3, col = "red", lwd = 2)
+
+model_check <- lm(Total ~ T2Mmin, data = df)
+
+abline(model_check, col = "black", lwd = 2)
+
+legend("topleft", legend = "Prédiction manuellement filtrée", col = "red", lwd = 2)
+```
+
+On observe que l'angle s'est approché de la projection théorique, ce qui était attendu: La multicolinéarité n'impose plus de compromis entre les variables T2M et STRD, forçant T2Mmin à être plus représentative, et donc interprétable.
+
+## Détermination d'un modèle plus fiable par Best Subset
+
+Notre modèle précédent visait à nous débarasser des variables parasites évidentes. Le choix rationnel pour poursuivre notre étude est donc de généraliser cette méthode, et de vérifier que toutes les variables encore présentes sont aussi utiles qu'il y parrait.
+
+Pour cela, nous utilisons une méthode de Best Subset, implémentée en itérant sur toutes les combinaisons (plutôt qu'un algorithme type branch and bound) par soucis de simplicité, et car nous n'avons que 11 variables (ce qui est suffisament faible pour rendre une implémentation Brute Force tout à fait viable).
+
+```{r}
+predictors <- setdiff(names(df), "Total")
+n_predictors <- length(predictors)
+results_list <- list()
+model_counter <- 1 # Un compteur pour suivre les modèles
+for (k in 1:n_predictors) {
+  
+  combinations <- combn(predictors, k, simplify = FALSE)
+  
+  for (combo in combinations) {
+    
+    formula_rhs <- paste(combo, collapse = " + ") # Pour avoir les variables de lm
+    formula <- as.formula(paste("Total ~", formula_rhs))
+    
+    model <- lm(formula, data = df)
+    
+    model_summary <- summary(model) # Pour récupérer le R² ajusté
+    aic_score <- AIC(model)
+    bic_score <- BIC(model)
+    adjr2_score <- model_summary$adj.r.squared
+    
+    results_list[[model_counter]] <- data.frame(
+      num_variables = k,
+      variables = paste(combo, collapse = ", "),
+      AIC = aic_score,
+      BIC = bic_score,
+      adjR2 = adjr2_score
+    )
+    
+    model_counter <- model_counter + 1
+  }
+}
+
+```
+
+```{r, echo=FALSE}
+#fusionne tout
+results_df <- bind_rows(results_list)
+
+# Cherche la ligne avec le plus petit AIC dans tout le tableau
+print("Meilleur subset via AIC: ")
+best_model_aic_global <- results_df[which.min(results_df$AIC), ]
+best_model_aic_global$variables
+cat("AIC:", best_model_aic_global$AIC, "\n")
+
+# Cherche la ligne avec le plus grand R² ajusté dans tout le tableau
+print("Meilleur subset via R² ajusté: ")
+best_model_adjr2_global <- results_df[which.max(results_df$adjR2), ]
+best_model_adjr2_global$variables
+cat("R²:", best_model_adjr2_global$adjR2, "\n")
+```
+
+Sans surprise, l'absence de pénalités du R² ajusté et les pénalités trop faibles du calcul de AIC amènent à trouver un subset contenant l'ensemble des variables.
+
+Pour un résultat plus fiables, il faut regarder le résultat obtenu avec le calcul de BIC
+
+```{r, echo=FALSE}
+# Cherche la ligne avec le plus petit BIC dans tout le tableau
+print("Meilleur subset via BIC: ")
+best_model_bic_global <- results_df[which.min(results_df$BIC), ]
+best_model_bic_global$variables
+cat("BIC:", best_model_bic_global$BIC, "\n")
+```
+
+Comme attendu, plusieurs variables ont disparu:
+
+- **TOY** qui est redondant avec X0
+
+- **Les variables corrélée du groupe SSRD-T2Mmin**, même s'il est surprenant de voir que le meilleur subset a priviligié STRD plutôt que T2Mmin
+
+- **RH** dont le summary du modèle précédent révélait déjà les faiblesses (en terme de potentiel d'interprétation de $Total$)
+
+Ce modèle est donc parfaitement cohérent, et offre une meilleure robustesse que le précédent, qui dépendait d'une annalyse arbitraire.
+
+Cependant, la méthode d'utiliser un subset de variable crée une perte d'information. Nous allons donc essayer des méthodes plus généralistes, qui permettent de limiter l'influence des variables redondantes.
+
+## La Régression Ridge pour une généralisation
+
+Pour cela, il existe la Régression Ridge. 
+
+$\hat{\beta}=argmin_{\beta}||{Y-X\beta||_2^2+\lambda||\beta||_2^2}$
+
+Au lieu de nous débarasser de certaines variables, cette méthode les préserve toutes, mais  va pénaliser les coefficients trop larges. Dès lors, les coefficients de nos variables corrélées ne seront plus gérés de manière imprévisible, mais le poids de chacune sera réduit, ce qui rendra le modèle plus stable.
+
+```{r}
+model_ridge <- lm.ridge(Total~., data=df, lambda = seq(0, 10, by = 0.01))
+plot(model_ridge)
+MASS::select(model_ridge)
+```
+
+Le graphique des traces est parlant : plus on pénalise (lambda augmente), plus les coefficients se rapprochent vers zéro. Le modèle est donc stabilisé. D'après select, le meilleur $lambda$ est **2.19**. Avec cette valeur, on a un modèle régularisé, mais qui garde toutes ses variables, ce qui le rend moins simple à interpréter qu'un subset, mais le rend plus robuste et fiable.
+
+## La Régression Lasso pour faire le tri automatiquement
+
+Le problème avec la méthode Ridge est que l'on se retrouve avec toutes les variables, même celles qui pourraient s'avérer inutiles (comme TOY). Nous allons employer la régression Lasso pour cela, qui a pour avantage d'introduire une pénalité capable d'attendre des coefficients nuls, et pas simplement d'y converger.
+
+$\hat{\beta}=argmin_{\beta}||{Y-X\beta||_2^2+\lambda||\beta||_1}$
+
+```{r}
+x <- model.matrix(Total ~ . -1, data = df)
+y <- df$Total
+
+cv_model_lasso <- glmnet::cv.glmnet(x, y, alpha = 1)
+
+# Afficher le graphique
+plot(cv_model_lasso)
+
+# Extraire les lambdas
+lambda_lasso <- cv_model_lasso$lambda.1se
+
+# Afficher les coefficients
+final_coeffs_lasso <- coef(cv_model_lasso, s = lambda_lasso)
+print(final_coeffs_lasso)
+```
+
+Il semble donc que le modèle proposé par la régréssion Lasso utilise les variables {X0, SSRD, STRD, T2Mmin, COVID, Holidays, DOW}
+
+Comme attendu, on obtient un résultat très proche de celui obtenu par la méthode du Best Subset (Seule T2Mmin diffère). Cependant, quand la méthode du Best Subset est peu robuste, cette méthode s'adaptera de manière très fluide à l'expension de notre Jeu de donnée.
+
+# Comparaison des Modèles et Conclusion Finale
+
+On a donc testé quatre manières de faire :
+
+| Approche | Sélection Variables | Gestion Multilinéarité | Idéal Pour... |
+| :--- | :--- | :--- | :--- |
+| **OLS Manuel** | Manuelle | Suppression | Interpréter les coeffs |
+| **Best Subset (BIC)** | Systématique | Suppression | Trouver le modèle le plus simple |
+| **Ridge** | Aucune (garde tout) | Réduit l'influence | Prédiction stable |
+| **Lasso** | Automatique (met à zéro)| Réduit et supprime | Mix prédiction et simplicité |
+
+Pour conclure, notre analyse nous a permis de construire un modèle solide. Si le but est de **comprendre** quels facteurs jouent un rôle, notre **modèle OLS final** ou celui du **Best Subset (BIC)** sont parfaits. Ils sont simples, logiques, et expliquent bien les données.
+
+Si le but est d'avoir le **meilleur prédicteur** possible, le **Lasso** est probablement le gagnant. Il fait un tri intelligent tout seul et régularise le reste, ce qui le rend plus robuste face à de nouvelles données. Il confirme de plus les résultats obtenus par la méthode du Best Subset.
+
+De cette manière, les méthodes **OLS filtrée** et **Best Subset** sont de bons outils pour guider notre collecte de donnée, et leur filtrage, tandis que la méthode **Lasso** sera le meilleur de nos outils pour exploiter ces données afin d'émettre des prédictions.
+
+Pour démontrer ce résultat, il aurait fallu diviser notre data_set pour avoir des données d'entraînement et de test, et vérifier la robustesse de nos modèles en:
+
+  - Entraînant chaque modèle sur notre Training Set
+  
+  - Déterminant le taux d'erreur de chaque modèle sur notre Test Set
+  
+On aurait alors remarqué que les méthodes Lasso ou Ridge offrent les meilleurs résultats.
+
+Cependant, cela dépasse le cadre de ce TP et de notre maîtrise du language R, donc nous nous arrêterons là.

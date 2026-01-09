@@ -1,0 +1,443 @@
+---
+title: "Rapport de TP - Modèles de Régression Linéaire"
+author: "Tommy MORALES & Aslan MARTIN"
+date: "28 septembre 2025"
+output: 
+  pdf_document:
+    toc: true
+    number_sections: true
+    extra_dependencies: float
+lang: fr
+---
+
+```{r setup, include=FALSE}
+rm(list=ls())
+graphics.off()
+
+# Options globales pour les chunks
+knitr::opts_chunk$set(fig.align = 'center', out.width = '80%', echo = TRUE, fig.pos = 'H')
+
+# Chargement des données
+df <- read.delim("Data_TP1_Matin_Morales.txt")
+df_mexico <- read.csv("Mexico_data.csv")
+```
+
+# Introduction
+
+Ce rapport présente l'analyse de deux jeux de données dans le cadre du
+TP 1 du cours de Modèles de Régression Linéaire. Le premier exercice
+nous a laissé une certaine liberté quant aux données étudiées. Notre
+dévolu s'est porté sur l'évolution du revenu de Microsoft. Le second
+nous a cependant imposé l'explication de la consommation d'électricité
+au Mexique, et nous a fourni un jeu de données dans ce but.
+
+# IV : Croissance d'une entreprise
+
+```{r calculs_partie_IV, include=FALSE}
+# -- Modèle 1 : Linéaire Complet --
+df_log <- df
+df_log[[2]] <- log(df[[2]])
+X <- cbind(rep(1, 21), df_log[[1]])
+beta <- solve(t(X) %*% X) %*% t(X) %*% df_log[[2]]
+df_log_pred <- df_log
+df_log_pred[[2]] = beta[[1]] + beta[[2]] * df_log_pred[[1]]
+Residu <- df_log[[2]] - df_log_pred[[2]]
+df_pred <- df_log_pred
+df_pred[[2]] <- exp(df_log_pred[[2]])
+Residu_val <- df[[2]] - df_pred[[2]]
+
+# -- Modèle 2 : Linéaire Réduit --
+df_treated <- df
+for (i in 1:(nrow(df)/3)) {
+    df_treated <- df_treated[-i, ]
+}
+df_log_t <- df_treated
+df_log_t[[2]] <- log(df_treated[[2]])
+X_t <- cbind(rep(1, nrow(df_log_t)), df_log_t[[1]])
+beta_t <- solve(t(X_t) %*% X_t) %*% t(X_t) %*% df_log_t[[2]]
+df_log_pred_t <- df_log_t
+df_log_pred_t[[2]] = beta_t[[1]] + beta_t[[2]] * df_log_pred_t[[1]]
+Residu_t <- df_log_t[[2]] - df_log_pred_t[[2]]
+df_pred_t <- df_log_pred_t
+df_pred_t[[2]] <- exp(df_log_pred_t[[2]])
+
+# -- Modèle 3 : Parabolique Complet --
+Annee_normalisee = df_log[[1]] - mean(df_log[[1]])
+X_p <- cbind(rep(1, 21), Annee_normalisee, Annee_normalisee^2)
+beta_p <- solve(t(X_p) %*% X_p) %*% t(X_p) %*% df_log[[2]]
+df_log_pred_p <- df_log
+df_log_pred_p[[2]] = beta_p[[1]] + beta_p[[2]] * Annee_normalisee + beta_p[[3]] * (Annee_normalisee^2)
+Residu_p <- df_log[[2]] - df_log_pred_p[[2]]
+df_pred_p <- df_log_pred_p
+df_pred_p[[2]] <- exp(df_log_pred_p[[2]])
+```
+
+## Analyse Exploratoire et Transformation des Données
+
+### Problématique et présentation des données
+
+L'objectif est de modéliser l'évolution du revenu annuel de l'entreprise
+Microsoft sur une période de 20 ans (2005-2025). Les données brutes,
+extraites de
+[Microsoft](https://www.microsoft.com/en-us/investor/earnings/fy-2023-q4/press-release-webcast),
+sont composées de deux variables : l'année et le revenu correspondant en
+milliards de dollars.
+
+### Visualisation et nécessité d'une transformation
+
+Une première visualisation du revenu en fonction de l'année montre
+une relation clairement non-linéaire. La croissance semble être de
+nature exponentielle.
+
+```{r plot_rev_brut, echo=FALSE, fig.cap="Évolution du revenu brut de Microsoft (2005-2025)."}
+plot(df[[1]], df[[2]],
+     main = "Evolution du Revenue de Microsoft par An",
+     xlab = "Année (2005-2025)",
+     ylab = "Revenue (en milliard de $)",
+     pch = 19)
+```
+
+Pour utiliser un modèle de régression linéaire, il est nécessaire de
+linéariser cette relation. Nous appliquons une transformation
+logarithmique sur la variable $Revenue$. Le nouveau nuage de points
+montre une tendance bien plus linéaire, justifiant l'approche de
+modélisation.
+
+```{r plot_rev_log, echo=FALSE, fig.cap="Évolution du logarithme du revenu de Microsoft."}
+plot(df[[1]], log(df[[2]]),
+     main = "Evolution du Revenue de Microsoft par An",
+     xlab = "Année (2005-2025)",
+     ylab = "log(Revenue)",
+     pch = 19)
+```
+
+## Modélisation et Interprétation
+
+### Ajustement du modèle par la méthode des Moindres Carrés Ordinaires (OLS)
+
+Nous cherchons à entraîner un modèle de régression linéaire de la forme
+:
+$$\log(\text{Revenue}_i) = \beta_0 + \beta_1 \times \text{Année}_i + \varepsilon_i$$
+Les coefficients $\hat{\beta} = (\hat{\beta_0}, \hat{\beta_1})^T$ sont
+estimés en minimisant la somme des carrés des résidus. La solution
+générale est donnée par : $$\hat{\beta} = (X^T X)^{-1} X^T y$$ où $X$
+est la matrice formée par une colonne de 1 et une colonne contenant les
+années afin de former notre système d'équations, et $y$ est le vecteur
+des valeurs de $\log(\text{Revenue})$.
+
+``` {#code:ols_manual caption="Code R pour le calcul matriciel des coefficients OLS." label="code:ols_manual"}
+# Préparation de la matrice X et du vecteur y (y est gardé dans df_log[[2]] pour 
+# simplifier certains calculs par la suite)
+df_log <- df
+df_log[[2]] <- log(df[[2]])
+X <- cbind(rep(1, 21), df_log[[1]])
+
+# Calcul manuel des coefficients beta (On aurait pu utiliser lm, mais cette méthode 
+# permet d'accentuer les différentes approches explorées)
+beta <- solve(t(X) %*% X) %*% t(X) %*% df_log[[2]]
+```
+
+```{r code_ols_manuel}
+beta
+```
+
+Ce calcul manuel nous fournit les estimations des coefficients
+$\hat{\beta_0}$ et $\hat{\beta_1}$, ainsi qu'un début de profilage par
+le calcul de résidu qui a inspiré la méthode suivante.
+
+## Validation du Modèle et Analyse des Résidus
+
+La figure suivante présente le graphe de l'erreur de notre
+modèle, normalisé et ramené à l'échelle de notre approximation, puis
+supperposé avec celle-ci. Ainsi, on peut voir quelles sections de notre
+exponentielle est la moins bien approchée.
+
+```{r plot_erreur_superposee, echo=FALSE, fig.cap="Graphiques de diagnostic pour le modèle log-linéaire."}
+plot(df[[1]], abs(Residu_val)/mean(abs(Residu_val))*mean(df_pred[[2]]),
+     type = "h",
+     main = "Erreur en fonction de l'Année",
+     xlab = "Année (2005-2025)",
+     ylab = "Écart entre les valeurs réelles et prédites",
+     col = "blue",
+     lwd = 2
+)
+lines(df_pred[[1]], df_pred[[2]], col = "red", lwd = 3)
+```
+
+Notre plot démontre un modèle fidèle au départ, mais dont la validité
+diverge au fur et à mesure du temps, ce que nous confirme la
+supperposition de la prédiction avec les données.
+
+```{r plot_superposition_1, echo=FALSE, fig.cap="Superposition des prédictions du modèle log-linéaire avec les données."}
+plot(df[[1]], df[[2]],
+     main = "Régression Linéaire sur log(Revenue) de Microsoft",
+     xlab = "Année (2005-2025)",
+     ylab = "log(Revenue) avec Revenue en Milliard de $",
+     pch = 19,
+     col = "blue"
+)
+lines(df_pred[[1]], df_pred[[2]], col = "red", lwd = 3)
+```
+
+## Exploration de la Seconde Méthode
+
+Bien que notre premier modèle soit aussi fidèle que possible via une OLS
+de degré 1, il est évident que l'étude de nos données vise à prédire
+l'évolution future de l'entreprise, pas son passé. Pour cette raison,
+pour limiter la saturation causée par les données qui précèdent
+l'inflexion de l'exponentielle, nous avons supprimé une valeur sur deux
+du premier tiers des données.
+
+```{r code_nettoyage}
+df_treated <- df
+for (i in 1:(nrow(df)/3)) {
+    df_treated <- df_treated[-i, ]
+}
+```
+
+Les résultats démontrent une amélioration de la prédiction au niveau des
+dernière valeurs, comme le démontre l'écart entre l'erreur des deux
+modèles.
+
+```{r plot_erreurs_comparees, echo=FALSE, fig.cap="Erreurs des deux modèles supperposées"}
+Residu_val_t <- df_treated[[2]] - df_pred_t[[2]]
+plot(df[[1]], abs(Residu_val),
+     main = "Comparaison des Erreurs Absolues des Deux Modèles",
+     xlab = "Année (2005-2025)",
+     ylab = "Erreur Absolue (Milliards de $)",
+     type = "o", pch = 19, col = "blue",
+     ylim = c(0, max(abs(Residu_val), abs(Residu_val_t))),
+     panel.first = grid()
+)
+points(df_treated[[1]], abs(Residu_val_t), type="o", pch = 17, col = "red")
+legend("topleft", legend = c("Modèle Complet", "Modèle Traité (données réduites)"), col = c("blue", "red"), pch = c(19, 17), bty = "n")
+```
+
+Cependant, si la différente est visible, elle n'est pas nonplus
+remarquable  et démontre que le problème principal vient
+des limites d'une approximation linéaire.
+
+```{r plot_superposition_2, echo=FALSE, fig.cap="Prédiction des deux modèles supperposées (Première version en rouge, seconde en vert) avec les données d'origine"}
+plot(df[[1]], df[[2]],
+     main = "Régression Linéaire sur log(Revenue) de Microsoft",
+     xlab = "Année (2005-2025)",
+     ylab = "log(Revenue) avec Revenue en Milliard de $",
+     pch = 19,
+     col = "blue"
+)
+lines(df_pred[[1]], df_pred[[2]], col = "red", lwd = 3)
+lines(df_pred_t[[1]], df_pred_t[[2]], col = "green", lwd = 3)
+```
+
+## Exploration de la Troisième Méthode
+
+Si les limites du modèle précédents sont son manque de degrés de liberté
+qui ne permet par de représenter un système complexe, cette nouvelle
+méthode semble assez évidente: Nous allons cette fois-ci approximer
+grâce à un modèle parabolique plutôt que linéaire.
+
+``` {#code:ols_manual caption="Code R pour le calcul matriciel des coefficients OLS." label="code:ols_manual"}
+# Préparation de la matrice X et du vecteur y (y est gardé dans df_log[[2]] pour simplifier certains calculs par la suite)
+Annee_normalisée = df_log[[1]] - mean(df_log[[1]])
+X <- cbind(rep(1, 21), Annee_normalisée, Annee_normalisée^2)
+
+# Calcul manuel des coefficients beta (On aurait pu utiliser lm, mais cette méthode 
+# permet d'accentuer les différentes approches explorées)
+beta <- solve(t(X) %*% X) %*% t(X) %*% df_log[[2]]
+```
+
+```{r code_ols_parabolique}
+beta_p
+```
+
+Le recentrage des données est essentiel. Sans cela, le compilateur
+détecte une corrélation linéaire entre les données, et une corrélation
+linéaire implique une infinité de solutions possibles, rendant $X^T*X$
+non-invesible.
+
+Recentrer les données amplifie l'aspect parabolique en accentuant
+l'écart entre chaque valeur.
+
+Les résultat obtenus avec ce modèle sont nettement meilleurs, tant sur
+l'aspect visuel que par l'étude des résidus.
+
+```{r plot_prediction_parabolique, echo=FALSE, fig.cap="Prédiction du nouveau modèle"}
+plot(df[[1]], df[[2]],
+     main = "Régression Linéaire sur log(Revenue) de Microsoft",
+     xlab = "Année (2005-2025)",
+     ylab = "log(Revenue) avec Revenue en Milliard de $",
+     pch = 19,
+     col = "blue"
+)
+lines(df_pred_p[[1]], df_pred_p[[2]], col = "green", lwd = 3)
+```
+
+```{r plot_erreurs_trois_modeles, echo=FALSE, fig.cap="Erreurs des différents modèles"}
+plot(df[[1]], abs(Residu_p),
+     main = "Comparaison des Erreurs Absolues des Trois Modèles",
+     xlab = "Année (2005-2025)",
+     ylab = "Erreur Absolue (Milliards de $)",
+     type="o", pch = 15, col = "darkgreen",
+     ylim = c(0, max(abs(Residu_p), abs(Residu), abs(Residu_t))),
+     panel.first = grid()
+)
+lines(df[[1]], abs(Residu), type = "o", pch = 19, col = "blue")
+lines(df_treated[[1]], abs(Residu_t), type = "o", pch = 17, col = "red")
+legend("topleft", 
+       legend = c("Linéaire Complet", "Linéaire Réduit", "Parabolique Complet"), 
+       col = c("blue", "red", "darkgreen"), 
+       pch = c(19, 17, 15), lty=1, bty = "n")
+```
+
+Comme attendu, le modèle parabolique est nettement meilleur que
+prédécesseurs.
+
+On pourrait continuer à rajouter des degrés de liberté, cependant, même
+si les résultats s'amélioreraient continuellement, cela se ferait au
+prix de beaucoup d'overfitting.
+
+# Étude V : Production d'Électricité au Mexique
+
+## Analyse Exploratoire des Données (EDA)
+
+### Problématique et présentation des données
+
+L'objectif est d'expliquer la production d'électricité journalière ($Total$) au Mexique en utilisant un ensemble de variables météorologiques et temporelles. Une rapide analyse confirme qu'aucune donnée n'est manquante, qu'il n'y a pas d'outliers, et que les formats sont consistants. Le csv contient les données de 12 variables collectées pendant 1461 jours.
+
+**Avertissement:** Ci-après, nous utiliserons $Total$ autant comme "Production Energétique" que comme "Consommation Energétique" car la demande s'adapte toujours à l'offre.
+
+### Analyse univariée et bivariée
+
+```{r}
+head(df_mexico)
+```
+
+```{r echo=FALSE, fig.cap="Consommation totale au fil du temps."}
+plot(c(0:(nrow(df_mexico)-1)), df_mexico$Total,
+     xlab = "Jours écoulés depuis le 1er Janvier 2019",
+     ylab = "Total",
+     pch = 19,
+     col = "blue",
+     panel.first = grid()
+)
+abline(v = seq(0, nrow(df_mexico), by = 365), col = "red", lty = 2)
+```
+
+Une tendance saisonnière claire se dégage, avec une consommation qui augmente jusqu'à un pic estival avant de redescendre en hiver. Ce cycle s'explique probablement par l'usage accru de la climatisation en été, qui l'emporte sur les besoins en chauffage et éclairage en hiver, surtout dans le contexte climatique du Mexique.
+
+```{r echo=FALSE, fig.cap="Consommation vs. Humidité."}
+plot(df_mexico$RH, df_mexico$Total,
+     xlab = "Humidité",
+     ylab = "Total",
+     pch = 19,
+     col = "blue",
+     panel.first = grid()
+)
+```
+
+La relation entre l'humidité et la consommation est plus diffuse, bien que deux clusters de points puissent être distingués.
+
+```{r echo=FALSE, fig.cap="Consommation vs. Température moyenne."}
+plot(df_mexico$T2M, df_mexico$Total,
+     xlab = "Température moyenne",
+     ylab = "Total",
+     pch = 19,
+     col = "blue",
+     panel.first = grid()
+)
+```
+
+Comme attendu, la consommation est fortement corrélée avec la température. La relation semble même de nature exponentielle, ce qui pourrait indiquer un seuil de tolérance à la chaleur au-delà duquel l'usage de la climatisation devient systématique.
+
+```{r echo=FALSE, fig.cap="Consommation vs. Indice COVID."}
+plot(df_mexico$Covid, df_mexico$Total,
+     xlab = "Indice de Restrictivité des mesures anti-COVID",
+     ylab = "Total",
+     pch = 19,
+     col = "blue",
+     panel.first = grid()
+)
+```
+
+De manière inattendue, la relation globale avec l'indice de restrictivité COVID ne montre pas de tendance claire. L'impact pourrait cependant varier selon la saison.
+
+```{r echo=FALSE, fig.cap="Consommation vs. COVID en Été."}
+val <- levels(factor(c(df_mexico$Covid[df_mexico$TOY >= 365*(1/4)+1 & df_mexico$TOY <= 1 + 365*(2/4)])))
+val_tot <- sapply(val, function(v) {
+  mean(df_mexico$Total[(df_mexico$TOY >= 365*(1/4)+1 & df_mexico$TOY <= 1 + 365*(2/4)) & df_mexico$Covid == v])
+})
+barplot(val_tot,
+        ylab = "Total",
+        names.arg = val
+)
+```
+
+L'analyse saisonnière révèle une corrélation inverse en été : des restrictions plus fortes sont associées à une consommation plus faible. Ceci suggère que la baisse de l'activité économique (tourisme, industries, commerces) a un impact plus important que l'augmentation de la consommation domestique.
+
+```{r echo=FALSE, fig.cap="Consommation moyenne pendant et hors vacances."}
+val <- c(mean(df_mexico$Total[df_mexico$Holidays == 0]), mean(df_mexico$Total[df_mexico$Holidays == 1]))
+barplot(val,
+        ylab = "Total",
+        names.arg = c("Hors vacance", "Vacance"),
+        col = c("lightblue", "lightgreen")
+)
+```
+
+La consommation moyenne est plus faible durant les jours fériés que les jours ouvrés.
+
+```{r echo=FALSE, fig.cap="Consommation moyenne par jour de la semaine."}
+val <- sapply(0:6, function(n) mean(df_mexico$Total[df_mexico$DOW == n]))
+barplot(val,
+        ylab = "Total",
+        names.arg = c("Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi", "Dimanche"),
+        col = c("violet", "blue", "cyan", "green", "yellow", "orange", "red")
+)
+```
+
+Confirmant la tendance précédente, la consommation est plus élevée durant les jours de la semaine (lundi-vendredi) que le week-end, soulignant le poids de l'activité industrielle et commerciale.
+
+### Détection de la Multicolinéarité
+
+```{r}
+# On ne prend pas la première colonne (dates) qui n'est pas numérique
+cor(df_mexico[, -1])
+```
+
+La matrice de corrélation confirme que les variables $T2M$, $T2Mmax$ et $T2Mmin$ sont quasiment identiques d'un point de vue informatif (cor > 0.85). Les inclure simultanément dans un modèle rendrait l'interprétation des coefficients impossible. Nous faisons donc le choix de ne conserver que $T2M$ comme représentant de la température.
+
+## Modélisation et Sélection de Variables
+
+### Premier modèle
+
+Nous construisons un premier modèle linéaire multiple incluant les variables jugées pertinentes et non-colinéaires suite à notre EDA.
+
+```{r code_mexico_modele}
+model1 <- lm(Total ~ RH + SSRD + T2M + Covid + Holidays + DOW, data = df_mexico)
+summary(model1)
+```
+
+### Interprétation du modèle final
+
+Le modèle est globalement très significatif (p-value < 2.2e-16). Le R-squared ajusté de **0.6905** signifie que notre modèle explique environ **69%** de la variance de la consommation totale d'électricité.
+
+Puisque toutes les variables sont significatives, aucune simplification n'est nécessaire. L'interprétation des coefficients nous apprend que, toutes choses égales par ailleurs :
+
+-   **(Intercept) :** La consommation de base, si toutes les autres variables étaient à zéro, est estimée à 423.6 GWh.
+-   **RH :** Une augmentation de 1% de l'humidité relative est associée à une augmentation de la consommation de 2.18 GWh.
+-   **SSRD :** Chaque unité supplémentaire de rayonnement solaire (en J.m-2) augmente la consommation de 1.107e-04 GWh.
+-   **T2M :** Une augmentation de 1°C de la température moyenne est associée à une hausse de 13.41 GWh.
+-   **Covid :** Chaque point d'augmentation de l'indice de restrictivité Covid est associé à une baisse de la consommation de 0.256 GWh.
+-   **Holidays :** Un jour férié réduit la consommation de 84.2 GWh par rapport à un jour ouvré non férié.
+-   **DOW :** Chaque jour qui passe dans la semaine (de Lundi=0 à Dimanche=6) est associé à une baisse moyenne de 12.89 GWh.
+
+## Validation et Conclusion de l'étude V
+
+L'analyse des résidus du modèle final ne révèle pas de violation majeure des hypothèses de la régression linéaire (voir page suivante).
+
+```{r plot_mexico_residus, echo=FALSE, fig.cap="Graphes des Résidus", out.width='70%'}
+par(mfrow = c(2, 2))
+plot(model1)
+```
+
+En conclusion, notre démarche a permis de construire un modèle robuste expliquant la consommation électrique au Mexique. L'analyse exploratoire a été l'étape clé qui a guidé nos choix, notamment pour la gestion de la multicolinéarité. Le modèle final met en lumière que la consommation est un phénomène complexe dicté à la fois par le climat, le calendrier et le contexte socio-économique. Ce modèle simple mais puissant explique **69%** de la variance observée.
+```
